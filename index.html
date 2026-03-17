@@ -180,6 +180,95 @@ input[type=range]{width:100%;margin-top:4px;accent-color:#1a1917}
 </div>
 
 <script>
+  // Real data cache
+const dataCache = {};
+
+async function fetchPrices(ticker) {
+  if (dataCache[ticker]) return dataCache[ticker];
+  try {
+    const res = await fetch(`/api/historical?ticker=${ticker}&period=5y`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    dataCache[ticker] = json;
+    return json;
+  } catch(e) { return null; }
+}
+
+async function calcRealMetrics() {
+  const total = tw();
+  const ws = holdings.map(h => h.w / total);
+  const results = await Promise.all(holdings.map(h => fetchPrices(h.t)));
+
+  // Fall back to simulated if any ticker fails
+  if (results.some(r => !r)) { renderMetrics(); return; }
+
+  // Align dates — use shortest series
+  const minLen = Math.min(...results.map(r => r.closes.length));
+  const trimmed = results.map(r => r.closes.slice(-minLen));
+
+  // Daily returns
+  const returns = trimmed.map(closes =>
+    closes.slice(1).map((p, i) => Math.log(p / closes[i]))
+  );
+
+  // Portfolio daily returns
+  const portReturns = returns[0].map((_, day) =>
+    returns.reduce((sum, r, i) => sum + ws[i] * r[day], 0)
+  );
+
+  // Annualized return & vol
+  const mean = portReturns.reduce((a, b) => a + b, 0) / portReturns.length;
+  const annRet = mean * 252;
+  const variance = portReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / portReturns.length;
+  const annVol = Math.sqrt(variance * 252);
+  const sharpe = (annRet - 0.05) / annVol;
+
+  // Max drawdown
+  let peak = 1, val = 1, mdd = 0;
+  portReturns.forEach(r => {
+    val *= (1 + r);
+    if (val > peak) peak = val;
+    const dd = (val - peak) / peak;
+    if (dd < mdd) mdd = dd;
+  });
+
+  document.getElementById('m-ret').textContent = (annRet * 100).toFixed(1) + '%';
+  document.getElementById('m-ret').className = 'mv ' + (annRet > 0 ? 'pos' : 'neg');
+  document.getElementById('m-vol').textContent = (annVol * 100).toFixed(1) + '%';
+  document.getElementById('m-sharpe').textContent = sharpe.toFixed(2);
+  document.getElementById('m-sharpe').className = 'mv ' + (sharpe > 1 ? 'pos' : sharpe > 0 ? 'neu' : 'neg');
+  document.getElementById('m-mdd').textContent = (mdd * 100).toFixed(1) + '%';
+  document.getElementById('m-ret').closest('.card').querySelector('div[style]').textContent = 'Risk-free rate: 5%. Real Yahoo Finance data.';
+
+  // Real performance chart
+  const portIndexed = [100];
+  portReturns.forEach(r => portIndexed.push(portIndexed[portIndexed.length-1] * (1+r)));
+
+  const spyData = await fetchPrices('SPY');
+  let spyIndexed = [100];
+  if (spyData) {
+    const spyCloses = spyData.closes.slice(-minLen);
+    spyCloses.slice(1).forEach((p, i) => {
+      spyIndexed.push(spyIndexed[spyIndexed.length-1] * (p / spyCloses[i]));
+    });
+  }
+
+  const labels = results[0].dates.slice(-minLen).filter((_, i) => i % 5 === 0);
+  const step = Math.floor(portIndexed.length / labels.length);
+
+  if (pChart) { pChart.destroy(); pChart = null; }
+  pChart = new Chart(document.getElementById('perf-chart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Your portfolio', data: portIndexed.filter((_, i) => i % 5 === 0), borderColor: '#1a4f8b', borderWidth: 2, pointRadius: 0, tension: .3, fill: false },
+        { label: 'S&P 500', data: spyIndexed.filter((_, i) => i % 5 === 0), borderColor: '#94a3b8', borderWidth: 1.5, pointRadius: 0, tension: .3, fill: false, borderDash: [5, 3] }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true, labels: { font: { size: 11 }, usePointStyle: true, pointStyleWidth: 8 } } }, scales: { x: { ticks: { font: { size: 10 }, maxTicksLimit: 8 }, grid: { display: false } }, y: { ticks: { font: { size: 10 }, callback: v => v.toFixed(0) }, title: { display: true, text: 'Indexed (base 100)', font: { size: 10 } } } } }
+  });
+}
 const COLORS=['#1a6b3a','#1a4f8b','#d4580a','#7c3aed','#0891b2','#be185d','#854d0e','#4338ca','#0f766e','#b45309'];
 const NAMES={AAPL:'Apple',MSFT:'Microsoft',NVDA:'NVIDIA',SPY:'S&P 500 ETF',QQQ:'Nasdaq 100',SCHD:'Schwab Dividend',JEPI:'JPMorgan Income',BND:'Vanguard Bond',TSLA:'Tesla',AMZN:'Amazon',GOOGL:'Alphabet',META:'Meta',JPM:'JPMorgan',VTI:'Vanguard Total Mkt',GLD:'SPDR Gold'};
 const STATS={AAPL:{r:.211,v:.285},MSFT:{r:.238,v:.258},NVDA:{r:.512,v:.485},SPY:{r:.148,v:.188},QQQ:{r:.192,v:.228},SCHD:{r:.118,v:.162},JEPI:{r:.092,v:.145},BND:{r:.038,v:.065},TSLA:{r:.285,v:.582},AMZN:{r:.198,v:.312},GOOGL:{r:.178,v:.272},META:{r:.265,v:.348},JPM:{r:.162,v:.245},VTI:{r:.142,v:.192},GLD:{r:.088,v:.152}};
@@ -237,6 +326,7 @@ function calcMetrics(){
 }
 
 function renderMetrics(){
+  calcRealMetrics();
   const m=calcMetrics();
   document.getElementById('m-ret').textContent=(m.r*100).toFixed(1)+'%';
   document.getElementById('m-ret').className='mv '+(m.r>0?'pos':'neg');
