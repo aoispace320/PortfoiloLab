@@ -29,10 +29,17 @@ class handler(BaseHTTPRequestHandler):
                 if df.empty:
                     self.send_error(404, 'Ticker not found')
                     return
+
+                # New yfinance version MultiIndex column
+                if isinstance(df.columns, type(df.columns)) and hasattr(df.columns, 'levels'):
+                    df.columns = df.columns.get_level_values(0)
+
+                closes = df['Close'].dropna()
+
                 data = {
                     'ticker': ticker,
-                    'dates': df.index.strftime('%Y-%m-%d').tolist(),
-                    'closes': [round(float(x), 4) for x in df['Close'].tolist()]
+                    'dates': closes.index.strftime('%Y-%m-%d').tolist(),
+                    'closes': [round(float(x), 4) for x in closes.values.tolist()]
                 }
                 _cache[cache_key] = data
             except Exception as e:
